@@ -1,0 +1,90 @@
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics.pairwise import cosine_similarity
+import joblib
+
+class CompetitiveAnalysisModel:
+    def _init_(self):
+        self.vectorizer = TfidfVectorizer(stop_words='english')
+        self.le_company = LabelEncoder()
+
+    def load_and_preprocess_data(self, file_path):
+        # Load the dataset
+        self.df = pd.read_csv(file_path)
+        
+        # Vectorize startup ideas
+        self.X = self.vectorizer.fit_transform(self.df['startup_idea'])
+
+        # Encode company names
+        self.df['company_name_encoded'] = self.le_company.fit_transform(self.df['company_name'])
+
+    def find_similar_startups(self, startup_idea):
+        # Vectorize the input startup idea
+        startup_idea_vectorized = self.vectorizer.transform([startup_idea])
+        
+        # Compute cosine similarity
+        cosine_sim = cosine_similarity(startup_idea_vectorized, self.X).flatten()
+        
+        # Get indices of the most similar startups
+        similar_indices = cosine_sim.argsort()[-5:][::-1]  # Top 5 similar startups
+        
+        # Get the corresponding company names, strengths, and weaknesses
+        companies = self.df['company_name'].iloc[similar_indices].unique()
+        results = []
+        for company in companies:
+            strengths = self.df[self.df['company_name'] == company]['strengths'].values[0]
+            weaknesses = self.df[self.df['company_name'] == company]['weaknesses'].values[0]
+            results.append((company, strengths, weaknesses))
+        
+        return results
+
+    def save_model(self, model_path):
+        joblib.dump(self.vectorizer, f"{model_path}/vectorizer.pkl")
+        joblib.dump(self.le_company, f"{model_path}/le_company.pkl")
+        self.df.to_pickle(f"{model_path}/data.pkl")
+
+    def load_model(self, model_path):
+        self.vectorizer = joblib.load(f"{model_path}/vectorizer.pkl")
+        self.le_company = joblib.load(f"{model_path}/le_company.pkl")
+        self.df = pd.read_pickle(f"{model_path}/data.pkl")
+
+# Define the chatbot using Hugging Face Transformers
+class Chatbot:
+    def _init_(self, model_name="microsoft/DialoGPT-medium"):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+
+    def chat(self, text):
+        inputs = self.tokenizer.encode(text + self.tokenizer.eos_token, return_tensors="pt")
+        chat_history_ids = self.model.generate(inputs, max_length=1000, pad_token_id=self.tokenizer.eos_token_id)
+        response = self.tokenizer.decode(chat_history_ids[:, inputs.shape[-1]:][0], skip_special_tokens=True)
+        return response
+
+# Main function to integrate the chatbot with the startup model
+def main():
+    startup_model = CompetitiveAnalysisModel()
+    startup_model.load_and_preprocess_data('startup_ideas.csv')
+    
+    chatbot = Chatbot()
+    
+    print("Chatbot: Hello! I am your startup advisor. How can I help you today?")
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() in ["exit", "quit"]:
+            print("Chatbot: Goodbye!")
+            break
+
+        # Find similar startups
+        results = startup_model.find_similar_startups(user_input)
+        
+        response = "Here are some companies similar to your idea:\n"
+        for company, strengths, weaknesses in results:
+            response += f"\nCompany: {company}\nStrengths: {strengths}\nWeaknesses: {weaknesses}\n"
+        
+        print(f"Chatbot: {response}")
+
+if _name_ == "_main_":
+    main()
